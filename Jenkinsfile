@@ -11,6 +11,22 @@ pipeline {
                 echo "Version from Params : ${params.version}"
             }
         }
+        stage('Init'){
+            steps{
+                sh """
+                cd terraform
+                terraform init -backend-config=${params.environment}/backend.tf -reconfigure
+                """
+            }
+        }
+        stage('Plan'){
+            steps{
+                sh """
+                cd terraform
+                terraform plan -var-file=${params.environment}/${params.environment}.tfvars -var="app_version=${params.version}" -var="env=${params.environment}"
+                """
+            }
+        }
     }
     post{
         always{
