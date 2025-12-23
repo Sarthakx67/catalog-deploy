@@ -19,6 +19,19 @@ pipeline {
                 //"""
             }
         }
+        stage('Approve') {
+            input {
+                message "Should we continue?"
+                ok "Yes, we should."
+                submitter "alice,bob"
+                parameters {
+                    string(name: 'PERSON', defaultValue: 'Mr Jenkins', description: 'Who should I say hello to?')
+                }
+            }
+            steps {
+                echo "Hello, ${PERSON}, nice to meet you."
+            }
+        }
         stage('Plan') {
             steps {
                 withCredentials([usernamePassword(
@@ -36,19 +49,6 @@ pipeline {
                 }
             }
         }
-        stage('Approve') {
-            input {
-                message "Should we continue?"
-                ok "Yes, we should."
-                submitter "alice,bob"
-                parameters {
-                    string(name: 'PERSON', defaultValue: 'Mr Jenkins', description: 'Who should I say hello to?')
-                }
-            }
-            steps {
-                echo "Hello, ${PERSON}, nice to meet you."
-            }
-        }
         stage('Apply'){
             steps{
                 withCredentials([usernamePassword(
@@ -61,7 +61,7 @@ pipeline {
                         export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
                         export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
                         export AWS_DEFAULT_REGION=ap-south-1
-                        terraform apply -var-file=${params.environment}/${params.environment}.tfvars -var="app_version=${params.version}" -var="env=${params.environment}" -auto-approve
+                        terraform apply -var="env=${params.environment}" -auto-approve
                     """
                 }
             }
