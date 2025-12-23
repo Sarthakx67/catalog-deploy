@@ -12,3 +12,9 @@ variable "project_name" {
 variable "env" {
   default = "dev"
 }
+variable "app_version" {
+  default = "100.100.100"
+}
+variable "domain_name" {
+  default = "stallions.space"
+}
