@@ -1,106 +1,256 @@
-## 07-catalogue-deploy (Catalogue deployment)
+# 🚀 Catalogue Service Deployment
 
-This repository contains the **deployment pipeline and Terraform** for rolling out the Catalogue service on AWS.
+Automated deployment pipeline for the Catalogue microservice using Jenkins and Terraform on AWS.
 
-### Repo responsibility (DevOps view)
-- Accept an application `version` (from the build pipeline).
-- Run Terraform to bake an AMI for that version.
-- Deploy/refresh an Auto Scaling Group behind an ALB Target Group + listener rule.
+## 📋 Overview
 
-This repo does **not** build the Node.js app and does **not** publish to Nexus. Those happen in the app repo.
+This repository manages the complete deployment lifecycle of the Catalogue service, including AMI baking and infrastructure provisioning. The pipeline accepts an application version from the build process and deploys it to AWS using immutable infrastructure patterns.
 
-### CI/CD (Jenkins) — deploy pipeline contract
-Pipeline: [Jenkinsfile](Jenkinsfile)
+## 🏗️ Architecture
 
-#### Required input
-- `version` (string): application version to deploy.
-	- Passed to Terraform as `-var="app_version=${params.version}"`.
+The deployment creates a highly available, auto-scaling infrastructure:
 
-#### Jenkins agent requirements
-The Jenkins node labeled `AGENT-1` must have:
-- `terraform` CLI
-- `aws` CLI (required by Terraform `local-exec` that terminates the bake instance)
-- Bash/sh compatible shell (pipeline uses `sh` steps)
+- **Custom AMI** baked with application version
+- **Auto Scaling Group** (2-5 instances) across multiple AZs
+- **Application Load Balancer** with health checks
+- **Target Group** routing traffic to healthy instances
+- **Host-based routing** via ALB listener rules
 
-#### Jenkins credentials
-- `aws-creds` (Username/Password credential)
-	- Mapped to `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
-	- Region is hard-coded in pipeline to `ap-south-1`
+## 🔧 Prerequisites
 
-#### Pipeline stages (as implemented)
-- **Deploy**: echoes `params.version`
-- **Init**: `terraform init -reconfigure` in `terraform/`
-- **Approve**: manual gate, limited to submitters `alice,bob`
-- **Plan**: `terraform plan -var="app_version=${params.version}"`
-- **Apply**: `terraform apply -var="app_version=${params.version}" -auto-approve`
+### Infrastructure Requirements
 
-### Terraform: what gets created
-Terraform lives under [terraform/](terraform/).
+The following resources must exist before running this pipeline:
 
-#### High-level flow
-1. **Bake AMI**
-	 - Launch a temporary EC2 instance from a base AlmaLinux AMI ([terraform/data.tf](terraform/data.tf)).
-	 - SSH into it, upload and run [terraform/catalogue.sh](terraform/catalogue.sh) with `app_version`.
-	 - Stop instance and create an AMI from it.
-	 - Terminate the temporary instance.
-2. **Deploy compute + traffic**
-	 - Create an ALB Target Group on `HTTP:8080` with health check `GET /health`.
-	 - Create a Launch Template using the baked AMI.
-	 - Create/replace an Auto Scaling Group (min 2, desired 2, max 5) in private subnets.
-	 - Add a listener rule that forwards host-based traffic to the target group.
+#### AWS SSM Parameters
+```
+/${project_name}/${env}/vpc_id
+/${project_name}/${env}/catalogue_sg_id
+/${project_name}/${env}/private_subnet_ids
+/${project_name}/${env}/app_alb_listener_arn
+```
 
-#### Health check contract
-- Target group health check: path `/health`, port `8080` ([terraform/main.tf](terraform/main.tf))
-- The app must return 2xx for `/health` to be considered healthy.
+#### SSH Key Pair
+- **Key Name**: `EC2-key`
+- **Private Key**: `EC2-key.pem` (must be present in `terraform/` directory)
 
-### Inputs and defaults
-Variables: [terraform/variables.tf](terraform/variables.tf)
+#### Network Access
+The temporary AMI baking instance requires egress to:
+- OS package repositories (yum)
+- GitHub (for ansible-pull)
 
-- `app_version`: **overridden by Jenkins** (default in code is `100.100.100`)
-- `env`: default `dev`
-- `domain_name`: default `stallions.space`
-- `project_name`: default `roboshop`
-- `common_tags.component`: default `catalogue`
+### Jenkins Agent Requirements
 
-### External prerequisites (must exist before running)
+The agent labeled `AGENT-1` must have:
+- Terraform CLI installed
+- AWS CLI installed
+- Bash-compatible shell
 
-#### SSM Parameter Store keys
-Terraform reads these SSM parameters (names are derived from variables):
-- `/${project_name}/${env}/vpc_id`
-- `/${project_name}/${env}/catalogue_sg_id`
-- `/${project_name}/${env}/private_subnet_ids` (comma-separated subnet IDs)
-- `/${project_name}/${env}/app_alb_listener_arn`
+### Jenkins Credentials
 
-Defined in [terraform/data.tf](terraform/data.tf).
+**Credential ID**: `aws-creds`
+- Type: Username with Password
+- Username → `AWS_ACCESS_KEY_ID`
+- Password → `AWS_SECRET_ACCESS_KEY`
+- Region: `ap-south-1` (hardcoded in pipeline)
 
-#### SSH requirements for AMI bake
-- EC2 instance uses `key_name = "EC2-key"` ([terraform/main.tf](terraform/main.tf))
-- Terraform SSH uses `private_key = file("EC2-key.pem")` (expects the PEM in the terraform working dir)
+## 🎯 Pipeline Stages
 
-#### Network egress for bake step
-The bake instance must be able to reach:
-- OS package repos (yum)
-- GitHub (to run `ansible-pull` from a public repo)
+### 1. **Deploy**
+Echoes the version parameter for verification
 
-### How the version is applied on instances
-The Jenkins `version` parameter becomes Terraform `app_version`, which is passed into [terraform/catalogue.sh](terraform/catalogue.sh) as `$1`, then into `ansible-pull` as `-e APP_VERSION=<version>`.
+### 2. **Init**
+Initializes Terraform with backend reconfiguration
+```bash
+terraform init -reconfigure
+```
 
-### Routing / DNS expectation
-Listener rule routes based on host header:
-- `${component}.app-${env}.${domain_name}`
-	- With defaults: `catalogue.app-dev.stallions.space`
+### 3. **Approve**
+Manual approval gate restricted to `alice` and `bob`
 
-Implemented in [terraform/main.tf](terraform/main.tf).
+### 4. **Plan**
+Generates Terraform execution plan
+```bash
+terraform plan -var="app_version=${params.version}"
+```
 
-### Manual run (without Jenkins)
+### 5. **Apply**
+Applies infrastructure changes automatically
+```bash
+terraform apply -var="app_version=${params.version}" -auto-approve
+```
+
+## 🔄 Deployment Workflow
+
+### AMI Baking Process
+
+1. Launch temporary EC2 instance (AlmaLinux 8.10)
+2. SSH into instance and upload `catalogue.sh`
+3. Run provisioning script with application version
+4. Execute `ansible-pull` to configure application
+5. Stop instance and create AMI snapshot
+6. Terminate temporary instance
+
+### Infrastructure Deployment
+
+1. Create ALB Target Group (port 8080)
+2. Generate Launch Template with baked AMI
+3. Create/update Auto Scaling Group
+4. Configure ALB listener rule for host-based routing
+
+## 📊 Configuration
+
+### Default Variables
+
+| Variable | Default Value | Description |
+|----------|---------------|-------------|
+| `app_version` | `100.100.100` | Application version (overridden by Jenkins) |
+| `env` | `dev` | Environment name |
+| `project_name` | `roboshop` | Project identifier |
+| `domain_name` | `stallions.space` | Base domain for routing |
+| `component` | `catalogue` | Service component name |
+
+### Auto Scaling Configuration
+
+- **Minimum instances**: 2
+- **Desired capacity**: 2
+- **Maximum instances**: 5
+- **Scaling policy**: Target tracking (50% CPU)
+
+### Health Check
+
+- **Path**: `/health`
+- **Port**: `8080`
+- **Protocol**: `HTTP`
+- **Expected response**: `200-299`
+- **Healthy threshold**: 2 consecutive checks
+- **Unhealthy threshold**: 3 consecutive checks
+- **Interval**: 15 seconds
+- **Timeout**: 5 seconds
+
+## 🌐 Routing
+
+Traffic is routed based on host header:
+
+```
+${component}.app-${env}.${domain_name}
+```
+
+**Example**: `catalogue.app-dev.stallions.space`
+
+## 🚀 Usage
+
+### Jenkins Pipeline
+
+1. Trigger the pipeline with version parameter:
+   ```
+   version: 1.0.5
+   ```
+
+2. Approve at the manual gate (authorized: alice, bob)
+
+3. Pipeline automatically provisions infrastructure
+
+### Manual Execution
+
 From the `terraform/` directory:
-- `terraform init -reconfigure`
-- `terraform plan -var="app_version=<version>"`
-- `terraform apply -var="app_version=<version>" -auto-approve`
 
-### Troubleshooting (common)
-- **Plan fails on SSM reads**: missing/incorrect SSM parameter names for the selected `project_name`/`env`.
-- **Provisioner SSH fails**: key pair name and PEM mismatch, instance not reachable in private subnet, or security group missing SSH access.
-- **AMI bake fails in catalogue.sh**: instance lacks egress to yum/GitHub.
-- **Local-exec terminate fails**: `aws` CLI not installed on the Jenkins agent or creds/region not exported.
-- **Targets unhealthy**: app not listening on 8080 or `/health` not returning 2xx.
+```bash
+# Initialize
+terraform init -reconfigure
+
+# Plan
+terraform plan -var="app_version=1.0.5"
+
+# Apply
+terraform apply -var="app_version=1.0.5" -auto-approve
+```
+
+## 🐛 Troubleshooting
+
+### Common Issues
+
+#### SSM Parameter Not Found
+**Symptom**: `terraform plan` fails with SSM parameter errors
+
+**Solution**: Verify SSM parameters exist with correct naming:
+```bash
+aws ssm get-parameter --name "/roboshop/dev/vpc_id"
+```
+
+#### SSH Provisioner Fails
+**Symptoms**: 
+- Cannot connect to instance
+- Permission denied errors
+
+**Solutions**:
+- Verify `EC2-key.pem` exists in `terraform/` directory
+- Check security group allows SSH from Terraform execution environment
+- Ensure instance is in a subnet with appropriate routing
+
+#### AMI Baking Fails
+**Symptom**: `catalogue.sh` script fails during execution
+
+**Solution**: Check instance has internet connectivity for:
+```bash
+yum install -y epel-release ansible
+ansible-pull -U https://github.com/...
+```
+
+#### Targets Unhealthy
+**Symptoms**: 
+- Instances registered but failing health checks
+- ALB returns 503 errors
+
+**Solutions**:
+- Verify application is listening on port 8080
+- Check `/health` endpoint returns 200 status
+- Review application logs on instances
+- Confirm security groups allow traffic on port 8080
+
+#### Local-exec Termination Fails
+**Symptom**: Temporary instance not terminated after AMI creation
+
+**Solution**: 
+- Verify AWS CLI is installed on Jenkins agent
+- Check AWS credentials are properly exported
+- Ensure IAM permissions include `ec2:TerminateInstances`
+
+## 📁 Repository Structure
+
+```
+.
+├── Jenkinsfile                 # Pipeline definition
+├── README.md                   # This file
+├── terraform/
+│   ├── catalogue.sh            # AMI provisioning script
+│   ├── data.tf                 # Data sources (SSM, AMI)
+│   ├── locals.tf               # Local values
+│   ├── main.tf                 # Core infrastructure
+│   ├── provider.tf             # AWS provider config
+│   ├── variables.tf            # Input variables
+│   └── EC2-key.pem            # SSH private key (gitignored)
+└── terraform.tfstate           # State file (gitignored)
+```
+
+## 🔐 Security Notes
+
+- Never commit `EC2-key.pem` to version control
+- AWS credentials are injected at runtime via Jenkins
+- Private keys and state files are excluded via `.gitignore`
+- All instances are deployed in private subnets
+
+## 📝 Notes
+
+- The pipeline uses immutable infrastructure patterns (bake & replace)
+- Each deployment creates a new AMI with timestamp
+- Auto Scaling Group is replaced on each deployment
+- Old AMIs should be cleaned up periodically
+- Deregistration delay is set to 60 seconds for graceful shutdown
+
+## 📞 Support
+
+For issues with:
+- **Pipeline failures**: Check Jenkins console output
+- **Infrastructure issues**: Review Terraform state and AWS Console
+- **Application issues**: Contact application development team
